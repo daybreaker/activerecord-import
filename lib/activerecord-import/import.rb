@@ -486,16 +486,16 @@ class ActiveRecord::Base
 
         column
       end
-
+      a_quoted_table_name = options[:partition_table].present? ? options[:partition_table] : quoted_table_name
       columns_sql = "(#{column_names.map { |name| connection.quote_column_name(name) }.join(',')})"
-      insert_sql = "INSERT #{options[:ignore] ? 'IGNORE ' : ''}INTO #{quoted_table_name} #{columns_sql} VALUES "
+      insert_sql = "INSERT #{options[:ignore] ? 'IGNORE ' : ''}INTO #{a_quoted_table_name} #{columns_sql} VALUES "
       values_sql = values_sql_for_columns_and_attributes(columns, array_of_attributes)
 
       number_inserted = 0
       ids = []
       if supports_import?
         # generate the sql
-        post_sql_statements = connection.post_sql_statements( quoted_table_name, options )
+        post_sql_statements = connection.post_sql_statements( a_quoted_table_name, options )
 
         batch_size = options[:batch_size] || values_sql.size
         values_sql.each_slice(batch_size) do |batch_values|
