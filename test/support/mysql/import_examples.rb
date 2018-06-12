@@ -4,6 +4,7 @@ def should_support_mysql_import_functionality
   ActiveRecord::Base.connection.execute "set sql_mode='STRICT_ALL_TABLES'"
 
   should_support_basic_on_duplicate_key_update
+  should_support_on_duplicate_key_ignore
 
   describe "#import" do
     context "with :on_duplicate_key_update and validation checks turned off" do
@@ -63,8 +64,8 @@ def should_support_mysql_import_functionality
       let(:columns) { %w(id author_name title) }
 
       setup do
-        topics << Topic.create!(title: "LDAP", author_name: "Big Bird")
-        topics << Topic.create!(title: "Rails Recipes", author_name: "Elmo")
+        topics << Topic.create!(title: "LDAP", author_name: "Big Bird", content: "Putting Directories to Work.")
+        topics << Topic.create!(title: "Rails Recipes", author_name: "Elmo", content: "A trusted collection of solutions.")
       end
 
       it "synchronizes passed in ActiveRecord model instances with the data just imported" do

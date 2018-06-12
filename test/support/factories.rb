@@ -15,6 +15,7 @@ FactoryGirl.define do
   factory :topic do
     sequence(:title) { |n| "Title #{n}" }
     sequence(:author_name) { |n| "Author #{n}" }
+    sequence(:content) { |n| "Content #{n}" }
   end
 
   factory :widget do
@@ -32,6 +33,7 @@ FactoryGirl.define do
   end
 
   factory :rule do
+    sequence(:id) { |n| n }
     sequence(:condition_text) { |n| "q_#{n}_#{n}" }
   end
 
@@ -53,5 +55,10 @@ FactoryGirl.define do
   factory :book do
     title 'Tortilla Flat'
     author_name 'John Steinbeck'
+  end
+
+  factory :car do
+    sequence(:Name) { |n| n }
+    sequence(:Features) { |n| "Feature #{n}" }
   end
 end

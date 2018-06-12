@@ -12,6 +12,11 @@ describe "#import" do
     end
   end
 
+  it "warns you that you're using the library wrong" do
+    error = assert_raise(ArgumentError) { Topic.import %w(title author_name), ['Author #1', 'Book #1', 0] }
+    assert_equal error.message, "Last argument should be a two dimensional array '[[]]'. First element in array was a String"
+  end
+
   it "should not produce an error when importing empty arrays" do
     assert_nothing_raised do
       Topic.import []
@@ -29,7 +34,8 @@ describe "#import" do
 
     it "should not modify the passed in values array" do
       assert_nothing_raised do
-        values = [%w(foo bar)].freeze
+        record = %w(foo bar).freeze
+        values = [record].freeze
         Topic.import %w(title author_name), values
       end
     end
@@ -42,14 +48,133 @@ describe "#import" do
           Widget.import Build(3, :widgets)
         end
       end
+
+      context "with uppercase letters" do
+        it "should import models successfully" do
+          assert_difference "Car.count", +3 do
+            Car.import Build(3, :cars)
+          end
+        end
+      end
+    end
+
+    context "that have no primary key" do
+      it "should import models successfully" do
+        assert_difference "Rule.count", +3 do
+          Rule.import Build(3, :rules)
+        end
+      end
+    end
+  end
+
+  describe "with an array of hashes" do
+    let(:columns) { [:title, :author_name] }
+    let(:values) { [{ title: "LDAP", author_name: "Jerry Carter", author_email_address: "jcarter@test.com" }, { title: "Rails Recipes", author_name: "Chad Fowler", author_email_address: "cfowler@test.com" }] }
+
+    it "should import hash data successfully" do
+      assert_difference "Topic.count", +2 do
+        Topic.import values, validate: false
+      end
+    end
+
+    it "should import specified hash data successfully" do
+      assert_difference "Topic.count", +2 do
+        Topic.import columns, values, validate: false
+      end
+
+      Topic.all.each do |t|
+        assert_nil t.author_email_address
+      end
+    end
+
+    context "with extra keys" do
+      let(:values) do
+        [
+          { title: "LDAP", author_name: "Jerry Carter" },
+          { title: "Rails Recipes", author_name: "Chad Fowler", author_email_address: "cfowler@test.com" } # author_email_address is unknown
+        ]
+      end
+
+      it "should fail when column names are not specified" do
+        err = assert_raises ArgumentError do
+          Topic.import values, validate: false
+        end
+
+        assert err.message.include? 'Extra keys: [:author_email_address]'
+      end
+
+      it "should succeed when column names are specified" do
+        assert_difference "Topic.count", +2 do
+          Topic.import columns, values, validate: false
+        end
+      end
+    end
+
+    context "with missing keys" do
+      let(:values) do
+        [
+          { title: "LDAP", author_name: "Jerry Carter" },
+          { title: "Rails Recipes" } # author_name is missing
+        ]
+      end
+
+      it "should fail when column names are not specified" do
+        err = assert_raises ArgumentError do
+          Topic.import values, validate: false
+        end
+
+        assert err.message.include? 'Missing keys: [:author_name]'
+      end
+
+      it "should fail on missing hash key from specified column names" do
+        err = assert_raises ArgumentError do
+          Topic.import %i(author_name), values, validate: false
+        end
+
+        assert err.message.include? 'Missing keys: [:author_name]'
+      end
+    end
+  end
+
+  unless ENV["SKIP_COMPOSITE_PK"]
+    describe "with composite primary keys" do
+      it "should import models successfully" do
+        tags = [Tag.new(tag_id: 1, publisher_id: 1, tag: 'Mystery')]
+
+        assert_difference "Tag.count", +1 do
+          Tag.import tags
+        end
+      end
+
+      it "should import array of values successfully" do
+        columns = [:tag_id, :publisher_id, :tag]
+        values = [[1, 1, 'Mystery'], [2, 1, 'Science']]
+
+        assert_difference "Tag.count", +2 do
+          Tag.import columns, values, validate: false
+        end
+      end
+    end
+  end
+
+  describe "with STI models" do
+    it "should import models successfully" do
+      dictionaries = [Dictionary.new(author_name: "Noah Webster", title: "Webster's Dictionary")]
+
+      assert_difference "Dictionary.count", +1 do
+        Dictionary.import dictionaries
+      end
+      assert_equal "Dictionary", Dictionary.first.type
     end
   end
 
   context "with :validation option" do
-    let(:columns) { %w(title author_name) }
-    let(:valid_values) { [["LDAP", "Jerry Carter"], ["Rails Recipes", "Chad Fowler"]] }
-    let(:valid_values_with_context) { [[1111, "Jerry Carter"], [2222, "Chad Fowler"]] }
-    let(:invalid_values) { [["The RSpec Book", ""], ["Agile+UX", ""]] }
+    let(:columns) { %w(title author_name content) }
+    let(:valid_values) { [["LDAP", "Jerry Carter", "Putting Directories to Work."], ["Rails Recipes", "Chad Fowler", "A trusted collection of solutions."]] }
+    let(:valid_values_with_context) { [[1111, "Jerry Carter", "1111"], [2222, "Chad Fowler", "2222"]] }
+    let(:invalid_values) { [["The RSpec Book", "David Chelimsky", "..."], ["Agile+UX", "", "All about Agile in UX."]] }
+    let(:valid_models) { valid_values.map { |title, author_name, content| Topic.new(title: title, author_name: author_name, content: content) } }
+    let(:invalid_models) { invalid_values.map { |title, author_name, content| Topic.new(title: title, author_name: author_name, content: content) } }
 
     context "with validation checks turned off" do
       it "should import valid data" do
@@ -84,6 +209,22 @@ describe "#import" do
         end
       end
 
+      it "should ignore uniqueness validators" do
+        Topic.import columns, valid_values, validate: true
+        assert_difference "Topic.count", +2 do
+          Topic.import columns, valid_values, validate: true
+        end
+      end
+
+      it "should not alter the callback chain of the model" do
+        attributes = columns.zip(valid_values.first).to_h
+        topic = Topic.new attributes
+        Topic.import [topic], validate: true
+        duplicate_topic = Topic.new attributes
+        Topic.import [duplicate_topic], validate: true
+        assert duplicate_topic.invalid?
+      end
+
       it "should not import invalid data" do
         assert_no_difference "Topic.count" do
           Topic.import columns, invalid_values, validate: true
@@ -99,7 +240,39 @@ describe "#import" do
       it "should report the failed instances" do
         results = Topic.import columns, invalid_values, validate: true
         assert_equal invalid_values.size, results.failed_instances.size
-        results.failed_instances.each { |e| assert_kind_of Topic, e }
+        assert_not_equal results.failed_instances.first, results.failed_instances.last
+        results.failed_instances.each do |e|
+          assert_kind_of Topic, e
+          assert_equal e.errors.count, 1
+        end
+      end
+
+      it "should set ids in valid models if adapter supports setting primary key of imported objects" do
+        if ActiveRecord::Base.supports_setting_primary_key_of_imported_objects?
+          Topic.import (invalid_models + valid_models), validate: true
+          assert_nil invalid_models[0].id
+          assert_nil invalid_models[1].id
+          assert_equal valid_models[0].id, Topic.all[0].id
+          assert_equal valid_models[1].id, Topic.all[1].id
+        end
+      end
+
+      it "should set ActiveRecord timestamps in valid models if adapter supports setting primary key of imported objects" do
+        if ActiveRecord::Base.supports_setting_primary_key_of_imported_objects?
+          Timecop.freeze(Time.at(0)) do
+            Topic.import (invalid_models + valid_models), validate: true
+          end
+
+          assert_nil invalid_models[0].created_at
+          assert_nil invalid_models[0].updated_at
+          assert_nil invalid_models[1].created_at
+          assert_nil invalid_models[1].updated_at
+
+          assert_equal valid_models[0].created_at, Topic.all[0].created_at
+          assert_equal valid_models[0].updated_at, Topic.all[0].updated_at
+          assert_equal valid_models[1].created_at, Topic.all[1].created_at
+          assert_equal valid_models[1].updated_at, Topic.all[1].updated_at
+        end
       end
 
       it "should import valid data when mixed with invalid data" do
@@ -107,6 +280,30 @@ describe "#import" do
           Topic.import columns, valid_values + invalid_values, validate: true
         end
         assert_equal 0, Topic.where(title: invalid_values.map(&:first)).count
+      end
+
+      it "should run callbacks" do
+        assert_no_difference "Topic.count" do
+          Topic.import columns, [["invalid", "Jerry Carter"]], validate: true
+        end
+      end
+
+      it "should call validation methods" do
+        assert_no_difference "Topic.count" do
+          Topic.import columns, [["validate_failed", "Jerry Carter"]], validate: true
+        end
+      end
+    end
+  end
+
+  context "without :validation option" do
+    let(:columns) { %w(title author_name) }
+    let(:invalid_values) { [["The RSpec Book", ""], ["Agile+UX", ""]] }
+
+    it "should not import invalid data" do
+      assert_no_difference "Topic.count" do
+        result = Topic.import columns, invalid_values
+        assert_equal 2, result.failed_instances.size
       end
     end
   end
@@ -171,7 +368,7 @@ describe "#import" do
 
       it "doesn't reload any data (doesn't work)" do
         Topic.import new_topics, synchronize: new_topics
-        if Topic.support_setting_primary_key_of_imported_objects?
+        if Topic.supports_setting_primary_key_of_imported_objects?
           assert new_topics.all?(&:persisted?), "Records should have been reloaded"
         else
           assert new_topics.all?(&:new_record?), "No record should have been reloaded"
@@ -280,6 +477,12 @@ describe "#import" do
       Topic.import [:id, :author_name, :title], [[99, "Bob Jones", "Topic 99"]]
       assert_equal 99, Topic.last.id
     end
+
+    it "ignores the recursive option" do
+      assert_difference "Topic.count", +1 do
+        Topic.import [:author_name, :title], [["David Chelimsky", "The RSpec Book"]], recursive: true
+      end
+    end
   end
 
   context "ActiveRecord timestamps" do
@@ -364,12 +567,12 @@ describe "#import" do
 
   context "importing through an association scope" do
     { has_many: :chapters, polymorphic: :discounts }.each do |association_type, association|
-      let(:book)   { FactoryGirl.create :book }
-      let(:scope)  { book.public_send association }
-      let(:klass)  { { chapters: Chapter, discounts: Discount }[association] }
-      let(:column) { { chapters: :title,  discounts: :amount  }[association] }
-      let(:val1)   { { chapters: 'A',     discounts: 5        }[association] }
-      let(:val2)   { { chapters: 'B',     discounts: 6        }[association] }
+      book   = FactoryGirl.create :book
+      scope  = book.public_send association
+      klass  = { chapters: Chapter, discounts: Discount }[association]
+      column = { chapters: :title,  discounts: :amount  }[association]
+      val1   = { chapters: 'A',     discounts: 5        }[association]
+      val2   = { chapters: 'B',     discounts: 6        }[association]
 
       context "for #{association_type}" do
         it "works importing models" do
@@ -386,7 +589,32 @@ describe "#import" do
 
           assert_equal [val1, val2], scope.map(&column).sort
         end
+
+        it "works importing array of hashes" do
+          scope.import [{ column => val1 }, { column => val2 }]
+
+          assert_equal [val1, val2], scope.map(&column).sort
+        end
       end
+
+      it "works with a non-standard association primary key" do
+        user = User.create(id: 1, name: 'Solomon')
+        user.user_tokens.import [:id, :token], [[5, '12345abcdef67890']]
+
+        token = UserToken.find(5)
+        assert_equal 'Solomon', token.user_name
+      end
+    end
+  end
+
+  context "importing model with polymorphic belongs_to" do
+    it "works without error" do
+      book     = FactoryGirl.create :book
+      discount = Discount.new(discountable: book)
+
+      Discount.import([discount])
+
+      assert_equal 1, Discount.count
     end
   end
 
@@ -445,6 +673,49 @@ describe "#import" do
     end
   end
 
+  context 'When importing arrays of values with Enum fields' do
+    let(:columns) { [:author_name, :title, :status] }
+    let(:values) { [['Author #1', 'Book #1', 0], ['Author #2', 'Book #2', 1]] }
+
+    it 'should be able to import enum fields' do
+      Book.delete_all if Book.count > 0
+      Book.import columns, values
+      assert_equal 2, Book.count
+
+      if ENV['AR_VERSION'].to_i >= 5.0
+        assert_equal 'draft', Book.first.read_attribute('status')
+        assert_equal 'published', Book.last.read_attribute('status')
+      else
+        assert_equal 0, Book.first.read_attribute('status')
+        assert_equal 1, Book.last.read_attribute('status')
+      end
+    end
+  end
+
+  context 'importing arrays of values with boolean fields' do
+    let(:columns) { [:author_name, :title, :for_sale] }
+
+    it 'should be able to coerce integers as boolean fields' do
+      Book.delete_all if Book.count > 0
+      values = [['Author #1', 'Book #1', 0], ['Author #2', 'Book #2', 1]]
+      assert_difference "Book.count", +2 do
+        Book.import columns, values
+      end
+      assert_equal false, Book.first.for_sale
+      assert_equal true, Book.last.for_sale
+    end
+
+    it 'should be able to coerce strings as boolean fields' do
+      Book.delete_all if Book.count > 0
+      values = [['Author #1', 'Book #1', 'false'], ['Author #2', 'Book #2', 'true']]
+      assert_difference "Book.count", +2 do
+        Book.import columns, values
+      end
+      assert_equal false, Book.first.for_sale
+      assert_equal true, Book.last.for_sale
+    end
+  end
+
   describe "importing when model has default_scope" do
     it "doesn't import the default scope values" do
       assert_difference "Widget.unscoped.count", +2 do
@@ -465,43 +736,114 @@ describe "#import" do
   end
 
   describe "importing serialized fields" do
-    it "imports values for serialized fields" do
+    it "imports values for serialized Hash fields" do
       assert_difference "Widget.unscoped.count", +1 do
         Widget.import [:w_id, :data], [[1, { a: :b }]]
       end
       assert_equal({ a: :b }, Widget.find_by_w_id(1).data)
     end
 
-    if ENV['AR_VERSION'].to_f >= 3.1
-      let(:data) { { a: :b } }
-      it "imports values for serialized JSON fields" do
-        assert_difference "Widget.unscoped.count", +1 do
-          Widget.import [:w_id, :json_data], [[9, data]]
+    it "imports values for serialized fields" do
+      assert_difference "Widget.unscoped.count", +1 do
+        Widget.import [:w_id, :unspecified_data], [[1, { a: :b }]]
+      end
+      assert_equal({ a: :b }, Widget.find_by_w_id(1).unspecified_data)
+    end
+
+    it "imports values for custom coder" do
+      assert_difference "Widget.unscoped.count", +1 do
+        Widget.import [:w_id, :custom_data], [[1, { a: :b }]]
+      end
+      assert_equal({ a: :b }, Widget.find_by_w_id(1).custom_data)
+    end
+
+    let(:data) { { a: :b } }
+    it "imports values for serialized JSON fields" do
+      assert_difference "Widget.unscoped.count", +1 do
+        Widget.import [:w_id, :json_data], [[9, data]]
+      end
+      assert_equal(data.as_json, Widget.find_by_w_id(9).json_data)
+    end
+
+    it "imports serialized values from saved records" do
+      Widget.import [:w_id, :json_data], [[1, data]]
+      assert_equal data.as_json, Widget.last.json_data
+
+      w = Widget.last
+      w.w_id = 2
+      Widget.import([w])
+      assert_equal data.as_json, Widget.last.json_data
+    end
+
+    context "with a store" do
+      it "imports serialized attributes set using accessors" do
+        vendors = [Vendor.new(name: 'Vendor 1', color: 'blue')]
+        assert_difference "Vendor.count", +1 do
+          Vendor.import vendors
         end
-        assert_equal(data.as_json, Widget.find_by_w_id(9).json_data)
+        assert_equal('blue', Vendor.first.color)
       end
     end
   end
 
   describe "#import!" do
-    let(:columns) { %w(title author_name) }
-    let(:valid_values) { [["LDAP", "Jerry Carter"], ["Rails Recipes", "Chad Fowler"]] }
-    let(:invalid_values) { [["Rails Recipes", "Chad Fowler"], ["The RSpec Book", ""], ["Agile+UX", ""]] }
+    context "with an array of unsaved model instances" do
+      let(:topics) { Build(2, :topics) }
+      let(:invalid_topics) { Build(2, :invalid_topics) }
 
-    context "with invalid data" do
-      it "should raise ActiveRecord::RecordInvalid" do
-        assert_no_difference "Topic.count" do
-          assert_raise ActiveRecord::RecordInvalid do
-            Topic.import! columns, invalid_values
+      context "with invalid data" do
+        it "should raise ActiveRecord::RecordInvalid" do
+          assert_no_difference "Topic.count" do
+            assert_raise ActiveRecord::RecordInvalid do
+              Topic.import! invalid_topics
+            end
+          end
+        end
+      end
+
+      context "with valid data" do
+        it "should import data" do
+          assert_difference "Topic.count", +2 do
+            Topic.import! topics
           end
         end
       end
     end
 
-    context "with valid data" do
+    context "with array of columns and array of values" do
+      let(:columns) { %w(title author_name) }
+      let(:valid_values) { [["LDAP", "Jerry Carter"], ["Rails Recipes", "Chad Fowler"]] }
+      let(:invalid_values) { [["Rails Recipes", "Chad Fowler"], ["The RSpec Book", ""], ["Agile+UX", ""]] }
+
+      context "with invalid data" do
+        it "should raise ActiveRecord::RecordInvalid" do
+          assert_no_difference "Topic.count" do
+            assert_raise ActiveRecord::RecordInvalid do
+              Topic.import! columns, invalid_values
+            end
+          end
+        end
+      end
+
+      context "with valid data" do
+        it "should import data" do
+          assert_difference "Topic.count", +2 do
+            Topic.import! columns, valid_values
+          end
+        end
+      end
+    end
+
+    context "with objects that respond to .to_sql as values" do
+      let(:columns) { %w(title author_name) }
+      let(:valid_values) { [["LDAP", Book.select("'Jerry Carter'").limit(1)], ["Rails Recipes", Book.select("'Chad Fowler'").limit(1)]] }
+
       it "should import data" do
         assert_difference "Topic.count", +2 do
           Topic.import! columns, valid_values
+          topics = Topic.all
+          assert_equal "Jerry Carter", topics.first.author_name
+          assert_equal "Chad Fowler", topics.last.author_name
         end
       end
     end

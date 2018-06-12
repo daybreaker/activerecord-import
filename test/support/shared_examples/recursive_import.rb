@@ -48,6 +48,22 @@ def should_support_recursive_import
       end
     end
 
+    it 'imports polymorphic associations from subclass' do
+      discounts = Array.new(1) { |i| Discount.new(amount: i) }
+      dictionaries = Array.new(1) { |i| Dictionary.new(author_name: "Author ##{i}", title: "Book ##{i}") }
+      dictionaries.each do |dictionary|
+        dictionary.discounts << discounts
+      end
+      Dictionary.import dictionaries, recursive: true
+      assert_equal 1, Dictionary.last.discounts.count
+      dictionaries.each do |dictionary|
+        dictionary.discounts.each do |discount|
+          assert_not_nil discount.discountable_id
+          assert_equal 'Book', discount.discountable_type
+        end
+      end
+    end
+
     [{ recursive: false }, {}].each do |import_options|
       it "skips recursion for #{import_options}" do
         assert_difference "Book.count", 0 do
@@ -74,6 +90,19 @@ def should_support_recursive_import
       end
     end
 
+    # Models are only valid if all associations are valid
+    it "only imports models with valid associations" do
+      assert_difference "Topic.count", 2 do
+        assert_difference "Book.count", 4 do
+          assert_difference "Chapter.count", 12 do
+            assert_difference "EndNote.count", 16 do
+              Topic.import new_topics_with_invalid_chapter, recursive: true
+            end
+          end
+        end
+      end
+    end
+
     it "skips validation of the associations if requested" do
       assert_difference "Chapter.count", +num_chapters do
         Topic.import new_topics_with_invalid_chapter, validate: false, recursive: true
@@ -86,34 +115,70 @@ def should_support_recursive_import
       end
     end
 
-    # These models dont validate associated.  So we expect that books and topics get inserted, but not chapters
-    # Putting a transaction around everything wouldn't work, so if you want your chapters to prevent topics from
-    # being created, you would need to have validates_associated in your models and insert with validation
-    describe "all_or_none" do
-      [Book, Topic, EndNote].each do |type|
-        it "creates #{type}" do
-          assert_difference "#{type}.count", send("num_#{type.to_s.downcase}s") do
-            Topic.import new_topics_with_invalid_chapter, all_or_none: true, recursive: true
+    it "imports an imported belongs_to association id" do
+      first_new_topic = new_topics[0]
+      second_new_topic = new_topics[1]
+
+      books = first_new_topic.books.to_a
+      Topic.import new_topics, validate: false
+
+      assert_difference "Book.count", books.size do
+        Book.import books, validate: false
+      end
+
+      books.each do |book|
+        assert_equal book.topic_id, first_new_topic.id
+      end
+
+      books.each { |book| book.topic_id = second_new_topic.id }
+      assert_no_difference "Book.count", books.size do
+        Book.import books, validate: false, on_duplicate_key_update: [:topic_id]
+      end
+
+      books.each do |book|
+        assert_equal book.topic_id, second_new_topic.id
+      end
+    end
+
+    unless ENV["SKIP_COMPOSITE_PK"]
+      describe "with composite primary keys" do
+        it "should import models and set id" do
+          tags = []
+          tags << Tag.new(tag_id: 1, publisher_id: 1, tag: 'Mystery')
+          tags << Tag.new(tag_id: 2, publisher_id: 1, tag: 'Science')
+
+          assert_difference "Tag.count", +2 do
+            Tag.import tags
           end
+
+          assert_equal 1, tags[0].tag_id
+          assert_equal 2, tags[1].tag_id
         end
       end
-      it "doesn't create chapters" do
-        assert_difference "Chapter.count", 0 do
-          Topic.import new_topics_with_invalid_chapter, all_or_none: true, recursive: true
+    end
+
+    describe "all_or_none" do
+      [Book, Chapter, Topic, EndNote].each do |type|
+        it "creates #{type}" do
+          assert_difference "#{type}.count", 0 do
+            Topic.import new_topics_with_invalid_chapter, all_or_none: true, recursive: true
+          end
         end
       end
     end
 
     # If adapter supports on_duplicate_key_update, it is only applied to top level models so that SQL with invalid
     # columns, keys, etc isn't generated for child associations when doing recursive import
-    describe "on_duplicate_key_update" do
-      let(:new_topics) { Build(1, :topic_with_book) }
+    if ActiveRecord::Base.connection.supports_on_duplicate_key_update?
+      describe "on_duplicate_key_update" do
+        let(:new_topics) { Build(1, :topic_with_book) }
 
-      it "imports objects with associations" do
-        assert_difference "Topic.count", +1 do
-          Topic.import new_topics, recursive: true, on_duplicate_key_update: [:updated_at], validate: false
-          new_topics.each do |topic|
-            assert_not_nil topic.id
+        it "imports objects with associations" do
+          assert_difference "Topic.count", +1 do
+            Topic.import new_topics, recursive: true, on_duplicate_key_update: [:updated_at], validate: false
+            new_topics.each do |topic|
+              assert_not_nil topic.id
+            end
           end
         end
       end

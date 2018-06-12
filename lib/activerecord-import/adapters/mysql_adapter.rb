@@ -7,7 +7,7 @@ module ActiveRecord::Import::MysqlAdapter
 
   # +sql+ can be a single string or an array. If it is an array all
   # elements that are in position >= 1 will be appended to the final SQL.
-  def insert_many( sql, values, *args ) # :nodoc:
+  def insert_many( sql, values, options = {}, *args ) # :nodoc:
     # the number of inserts default
     number_of_inserts = 0
 
@@ -31,7 +31,7 @@ module ActiveRecord::Import::MysqlAdapter
     max = max_allowed_packet
 
     # if we can insert it all as one statement
-    if NO_MAX_PACKET == max || total_bytes < max
+    if NO_MAX_PACKET == max || total_bytes <= max || options[:force_single_insert]
       number_of_inserts += 1
       sql2insert = base_sql + values.join( ',' ) + post_sql
       insert( sql2insert, *args )
@@ -39,14 +39,17 @@ module ActiveRecord::Import::MysqlAdapter
       value_sets = ::ActiveRecord::Import::ValueSetsBytesParser.parse(values,
         reserved_bytes: sql_size,
         max_bytes: max)
-      value_sets.each do |value_set|
-        number_of_inserts += 1
-        sql2insert = base_sql + value_set.join( ',' ) + post_sql
-        insert( sql2insert, *args )
+
+      transaction(requires_new: true) do
+        value_sets.each do |value_set|
+          number_of_inserts += 1
+          sql2insert = base_sql + value_set.join( ',' ) + post_sql
+          insert( sql2insert, *args )
+        end
       end
     end
 
-    [number_of_inserts, []]
+    ActiveRecord::Import::Result.new([], number_of_inserts, [], [])
   end
 
   # Returns the maximum number of bytes that the server will allow
@@ -60,6 +63,12 @@ module ActiveRecord::Import::MysqlAdapter
     end
   end
 
+  def pre_sql_statements( options)
+    sql = []
+    sql << "IGNORE" if options[:ignore] || options[:on_duplicate_key_ignore]
+    sql + super
+  end
+
   # Add a column to be updated on duplicate key update
   def add_column_for_on_duplicate_key_update( column, options = {} ) # :nodoc:
     if options.include?(:on_duplicate_key_update)
@@ -68,7 +77,7 @@ module ActiveRecord::Import::MysqlAdapter
       when Array then columns << column.to_sym unless columns.include?(column.to_sym)
       when Hash then columns[column.to_sym] = column.to_sym
       end
-    else
+    elsif !options[:ignore] && !options[:on_duplicate_key_ignore]
       options[:on_duplicate_key_update] = [column.to_sym]
     end
   end
@@ -78,10 +87,11 @@ module ActiveRecord::Import::MysqlAdapter
   def sql_for_on_duplicate_key_update( table_name, *args ) # :nodoc:
     sql = ' ON DUPLICATE KEY UPDATE '
     arg = args.first
+    locking_column = args.last
     if arg.is_a?( Array )
-      sql << sql_for_on_duplicate_key_update_as_array( table_name, arg )
+      sql << sql_for_on_duplicate_key_update_as_array( table_name, locking_column, arg )
     elsif arg.is_a?( Hash )
-      sql << sql_for_on_duplicate_key_update_as_hash( table_name, arg )
+      sql << sql_for_on_duplicate_key_update_as_hash( table_name, locking_column, arg )
     elsif arg.is_a?( String )
       sql << arg
     else
@@ -90,25 +100,33 @@ module ActiveRecord::Import::MysqlAdapter
     sql
   end
 
-  def sql_for_on_duplicate_key_update_as_array( table_name, arr ) # :nodoc:
+  def sql_for_on_duplicate_key_update_as_array( table_name, locking_column, arr ) # :nodoc:
     results = arr.map do |column|
       qc = quote_column_name( column )
       "#{table_name}.#{qc}=VALUES(#{qc})"
     end
+    increment_locking_column!(results, table_name, locking_column)
     results.join( ',' )
   end
 
-  def sql_for_on_duplicate_key_update_as_hash( table_name, hsh ) # :nodoc:
+  def sql_for_on_duplicate_key_update_as_hash( table_name, locking_column, hsh ) # :nodoc:
     results = hsh.map do |column1, column2|
       qc1 = quote_column_name( column1 )
       qc2 = quote_column_name( column2 )
       "#{table_name}.#{qc1}=VALUES( #{qc2} )"
     end
+    increment_locking_column!(results, table_name, locking_column)
     results.join( ',')
   end
 
   # Return true if the statement is a duplicate key record error
   def duplicate_key_update_error?(exception) # :nodoc:
     exception.is_a?(ActiveRecord::StatementInvalid) && exception.to_s.include?('Duplicate entry')
+  end
+
+  def increment_locking_column!(results, table_name, locking_column)
+    if locking_column.present?
+      results << "#{table_name}.`#{locking_column}`=`#{locking_column}`+1"
+    end
   end
 end
